@@ -22,8 +22,8 @@
             text-align: center;
             font-family: 'Cinzel', serif;
             font-weight: 800;
-            font-size: clamp(28px, 5vw, 60px); /* 变小 */
-            letter-spacing: 0.1em; /* 变小 */
+            font-size: clamp(28px, 5vw, 60px);
+            letter-spacing: 0.1em;
             text-transform: uppercase;
             pointer-events: none;
             z-index: 20;
@@ -34,7 +34,7 @@
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-image: linear-gradient(180deg, #fffdf0 0%, #eacda3 30%, #d6ae7b 60%, #8b6c42 100%);
-            filter: drop-shadow(0 0 12px rgba(212, 175, 55, 0.6)); /* 变小 */
+            filter: drop-shadow(0 0 12px rgba(212, 175, 55, 0.6));
             
             animation: titleFadeIn 2s ease-out forwards 1s;
             transition: filter 1.5s ease, background-image 1.5s ease;
@@ -51,7 +51,7 @@
 
         #top-right-controls { 
             position: absolute; 
-            top: 350px; /* 向下移动 */
+            top: 40px;
             right: 15px;
             z-index: 30; 
             display: flex; 
@@ -274,6 +274,78 @@
             border-color: #d4af37;
             color: #fff;
         }
+
+        /* 移动端提示 */
+        #mobile-tip {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(10, 10, 10, 0.7);
+            border: 1px solid rgba(212, 175, 55, 0.4);
+            border-radius: 8px;
+            padding: 8px 16px;
+            color: #d4af37;
+            font-family: 'Cinzel', serif;
+            font-size: 12px;
+            text-align: center;
+            backdrop-filter: blur(5px);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+            z-index: 40;
+            display: none;
+        }
+
+        /* 照片聚焦提示 */
+        #photo-focus-tip {
+            position: absolute;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(10, 10, 10, 0.8);
+            border: 1px solid rgba(212, 175, 55, 0.6);
+            border-radius: 8px;
+            padding: 10px 20px;
+            color: #fff;
+            font-family: 'Cinzel', serif;
+            font-size: 13px;
+            text-align: center;
+            backdrop-filter: blur(10px);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+            z-index: 40;
+            box-shadow: 0 0 20px rgba(212, 175, 55, 0.3);
+            max-width: 80%;
+        }
+
+        @media (max-width: 768px) {
+            #mobile-tip {
+                display: block;
+            }
+            
+            .control-btn {
+                width: 70px;
+                font-size: 11px;
+                padding: 6px 0;
+            }
+            
+            #mode-controls {
+                bottom: 60px;
+                gap: 6px;
+            }
+            
+            .mode-btn {
+                width: 70px;
+                font-size: 11px;
+                padding: 10px 0;
+            }
+            
+            #hide-controls-btn {
+                bottom: 60px;
+            }
+        }
     </style>
 
     <script type="importmap">
@@ -289,6 +361,12 @@
 <body>
     <div id="loader"><div class="spinner"></div></div>
     <div id="canvas-container"></div>
+
+    <!-- 移动端提示 -->
+    <div id="mobile-tip">双指缩放 · 单指旋转 · 点击照片查看</div>
+    
+    <!-- 照片聚焦提示 -->
+    <div id="photo-focus-tip">双指离开屏幕或点击空白处退出照片查看</div>
 
     <div id="ui-layer">
         <div id="main-title"></div>
@@ -362,12 +440,17 @@
                 rotationSpeed: 0.5,
                 zoomSpeed: 0.1,
                 minZoom: 20,
-                maxZoom: 80
+                maxZoom: 80,
+                touch: {
+                    rotationSensitivity: 0.01,
+                    zoomSensitivity: 0.02,
+                    doubleTapDelay: 300
+                }
             }
         };
 
         const STATE = {
-            mode: 'GATHER', // GATHER, SCATTER, LETTER, FOCUS_PHOTO
+            mode: 'GATHER',
             currentMode: 'GATHER',
             focusTarget: null,
             focusedPhotoMesh: null,
@@ -400,7 +483,17 @@
             // 控制面板隐藏状态
             controlsHidden: false,
             // 照片位置调整
-            photoFocusPosition: new THREE.Vector3(0, 0, 0)
+            photoFocusPosition: new THREE.Vector3(0, 0, 0),
+            // 触控状态
+            isTouchDevice: false,
+            touchStart: { x: 0, y: 0, time: 0 },
+            touchStartDistance: 0,
+            touchStartZoom: 0,
+            isPinching: false,
+            lastTapTime: 0,
+            lastTapPosition: { x: 0, y: 0 },
+            touchRotation: { x: 0, y: 0 },
+            touchZoom: 1.0
         };
 
         let scene, camera, renderer, composer, clock = new THREE.Clock();
@@ -418,6 +511,9 @@
         const _invMatrix = new THREE.Matrix4();
 
         async function init() {
+            // 检测是否为触控设备
+            STATE.isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+            
             initThree();            
             setupEnvironment();     
             setupLights();          
@@ -440,6 +536,11 @@
             const loader = document.getElementById('loader');
             loader.style.opacity = 0;
             setTimeout(() => loader.remove(), 1200);
+
+            // 显示移动端提示
+            if (STATE.isTouchDevice) {
+                showMobileTip();
+            }
 
             animate(); 
         }
@@ -615,15 +716,14 @@
                 
                 // 对于照片，分散时放在更显眼的位置
                 if (this.type === 'PHOTO') {
-                    const rScatter = 8 + Math.random() * 5; // 照片在更近的距离
-                    const theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1) * 0.5 + Math.PI * 0.25; // 照片在视野中心区域
+                    const rScatter = 8 + Math.random() * 5;
+                    const theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1) * 0.5 + Math.PI * 0.25;
                     this.posScatter.set(
                         rScatter * Math.sin(phi) * Math.cos(theta),
                         rScatter * Math.sin(phi) * Math.sin(theta),
                         rScatter * Math.cos(phi)
                     );
                 } else {
-                    // 普通粒子分散到更远的地方
                     const rScatter = this.isDust ? (15 + Math.random()*25) : (10 + Math.random()*15);
                     const theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1);
                     this.posScatter.set(
@@ -643,31 +743,26 @@
                 }
                 else if (mode === 'FOCUS_PHOTO') {
                     if (this.mesh === focusTargetMesh) {
-                        // 照片聚焦：飞到屏幕正中心位置
                         _targetVec.copy(STATE.photoFocusPosition);
                         target = _targetVec;
                         lerpSpeed = 5.0;
                         
-                        // 让照片始终面向相机
                         this.mesh.lookAt(camera.position);
                         
-                        // 根据照片宽高比调整缩放
                         const aspect = this.mesh.userData?.aspect || 1;
                         let scaleFactor = 6.0;
-                        if (aspect > 1.5) { // 横向照片
+                        if (aspect > 1.5) {
                             scaleFactor = 8.0;
-                        } else if (aspect < 0.7) { // 纵向照片
+                        } else if (aspect < 0.7) {
                             scaleFactor = 4.0;
                         }
                         s = this.baseScale * scaleFactor;
                     } else {
-                        // 其他粒子远离
                         target = this.posScatter;
                         s = 0.01;
                         lerpSpeed = 6.0;
                     }
                 } else {
-                    // GATHER 模式
                     target = this.posTree;
                 }
 
@@ -690,7 +785,7 @@
                     if (this.isDust) {
                         s = this.baseScale * (0.5 + 0.5 * Math.sin(time * 3 + this.offset));
                     } else if ((mode === 'SCATTER' || mode === 'LETTER') && this.type === 'PHOTO') {
-                        s = this.baseScale * 2.5; // 照片在分散模式下稍微大一些
+                        s = this.baseScale * 2.5;
                     }
                     
                     if (STATE.currentThemeIndex === 1 && mode === 'GATHER' && !this.isDust && this.type !== 'PHOTO') {
@@ -890,7 +985,6 @@
         function addPhotoToScene(texture, photoURL) {
             if (!texture.image) return;
             
-            // 检查是否已上传相同的照片
             if (STATE.uploadedPhotoURLs.has(photoURL)) {
                 alert('这张照片已经上传过了！');
                 return;
@@ -925,7 +1019,6 @@
             photoMeshGroup.add(group);
             particleSystem.push(new Particle(group, 'PHOTO', false));
             
-            // 存储照片数据
             STATE.photos.push({
                 mesh: group,
                 photoURL: photoURL,
@@ -1062,10 +1155,8 @@
                 e.stopPropagation();
                 STATE.controlsHidden = !STATE.controlsHidden;
                 
-                // 切换按钮状态
                 hideBtn.classList.toggle('hidden', STATE.controlsHidden);
                 
-                // 隐藏/显示控制面板
                 const topControls = document.getElementById('top-right-controls');
                 const title = document.getElementById('main-title');
                 const modeControls = document.getElementById('mode-controls');
@@ -1086,26 +1177,45 @@
             };
         }
 
+        function showMobileTip() {
+            const tip = document.getElementById('mobile-tip');
+            tip.style.opacity = '1';
+            setTimeout(() => {
+                tip.style.opacity = '0';
+                setTimeout(() => {
+                    tip.style.display = 'none';
+                }, 500);
+            }, 3000);
+        }
+
+        function showPhotoFocusTip() {
+            const tip = document.getElementById('photo-focus-tip');
+            tip.style.opacity = '1';
+            setTimeout(() => {
+                tip.style.opacity = '0';
+            }, 3000);
+        }
+
         function focusOnPhoto(photoMesh) {
             if (STATE.mode === 'FOCUS_PHOTO' && STATE.focusedPhotoMesh === photoMesh) {
-                // 如果已经聚焦在这个照片上，则退出聚焦模式
                 exitPhotoFocus();
             } else {
-                // 进入照片聚焦模式
                 STATE.focusedPhotoMesh = photoMesh;
                 STATE.mode = 'FOCUS_PHOTO';
                 STATE.currentMode = 'FOCUS_PHOTO';
                 updateModeButtons();
                 
-                // 计算屏幕中心位置（相机前方固定距离）
-                // 将照片移动到相机前方合适距离，正好在屏幕中心
                 STATE.photoFocusPosition.set(0, 0, CONFIG.camera.z - 12);
                 
-                // 自动旋转到照片
                 STATE.isAnimating = true;
                 STATE.animationProgress = 0;
                 STATE.targetRotation.x = 0;
                 STATE.targetRotation.y = 0;
+                
+                // 显示照片聚焦提示
+                if (STATE.isTouchDevice) {
+                    showPhotoFocusTip();
+                }
             }
         }
 
@@ -1125,12 +1235,10 @@
         function enterLetterMode() {
             if (STATE.mode === 'LETTER') return;
             
-            // 先切换到分散模式
             STATE.mode = 'SCATTER';
             STATE.currentMode = 'LETTER';
             updateModeButtons();
             
-            // 延迟显示书信界面
             setTimeout(() => {
                 const overlay = document.getElementById('letter-overlay');
                 const paper = document.querySelector('.letter-paper');
@@ -1163,14 +1271,12 @@
                     } 
                 }, 2000);
                 
-                // 更新模式为书信模式
                 STATE.mode = 'LETTER';
                 updateModeButtons();
                 
-                // 设置适合阅读的视角
                 STATE.isAnimating = true;
                 STATE.animationProgress = 0;
-                STATE.targetRotation.x = Math.PI / 6; // 稍微俯视的角度
+                STATE.targetRotation.x = Math.PI / 6;
                 STATE.targetRotation.y = STATE.rotation.y;
             }, 500);
         }
@@ -1192,11 +1298,146 @@
             
             updateModeButtons();
             
-            // 动画回到聚拢模式
             STATE.isAnimating = true;
             STATE.animationProgress = 0;
             STATE.targetRotation.x = 0.1;
             STATE.rotation.y = STATE.rotation.y;
+        }
+
+        // 触控事件处理函数
+        function handleTouchStart(event) {
+            event.preventDefault();
+            
+            const touches = event.touches;
+            const now = Date.now();
+            
+            if (touches.length === 1) {
+                // 单指触摸 - 记录起始位置和时间
+                const touch = touches[0];
+                STATE.touchStart.x = touch.clientX;
+                STATE.touchStart.y = touch.clientY;
+                STATE.touchStart.time = now;
+                
+                // 检查是否为双击
+                const timeSinceLastTap = now - STATE.lastTapTime;
+                const distance = Math.sqrt(
+                    Math.pow(touch.clientX - STATE.lastTapPosition.x, 2) +
+                    Math.pow(touch.clientY - STATE.lastTapPosition.y, 2)
+                );
+                
+                if (timeSinceLastTap < CONFIG.controls.touch.doubleTapDelay && distance < 20) {
+                    // 双击 - 重置视图
+                    STATE.rotation.x = 0.1;
+                    STATE.rotation.y = 0;
+                    STATE.targetRotation.x = 0.1;
+                    STATE.targetRotation.y = 0;
+                    camera.position.z = CONFIG.camera.z;
+                    STATE.mode = 'GATHER';
+                    STATE.currentMode = 'GATHER';
+                    updateModeButtons();
+                    
+                    // 防止误触
+                    STATE.lastTapTime = 0;
+                } else {
+                    STATE.lastTapTime = now;
+                    STATE.lastTapPosition.x = touch.clientX;
+                    STATE.lastTapPosition.y = touch.clientY;
+                }
+                
+            } else if (touches.length === 2) {
+                // 双指触摸 - 开始缩放
+                STATE.isPinching = true;
+                const touch1 = touches[0];
+                const touch2 = touches[1];
+                
+                STATE.touchStartDistance = Math.sqrt(
+                    Math.pow(touch2.clientX - touch1.clientX, 2) +
+                    Math.pow(touch2.clientY - touch1.clientY, 2)
+                );
+                STATE.touchStartZoom = camera.position.z;
+            }
+        }
+
+        function handleTouchMove(event) {
+            event.preventDefault();
+            
+            const touches = event.touches;
+            
+            if (STATE.mode === 'LETTER') return;
+            
+            if (touches.length === 1 && !STATE.isPinching) {
+                // 单指移动 - 旋转
+                const touch = touches[0];
+                const deltaX = touch.clientX - STATE.touchStart.x;
+                const deltaY = touch.clientY - STATE.touchStart.y;
+                
+                STATE.rotation.y += deltaX * CONFIG.controls.touch.rotationSensitivity;
+                STATE.rotation.x += deltaY * CONFIG.controls.touch.rotationSensitivity;
+                
+                STATE.touchStart.x = touch.clientX;
+                STATE.touchStart.y = touch.clientY;
+                
+            } else if (touches.length === 2) {
+                // 双指移动 - 缩放
+                STATE.isPinching = true;
+                const touch1 = touches[0];
+                const touch2 = touches[1];
+                
+                const currentDistance = Math.sqrt(
+                    Math.pow(touch2.clientX - touch1.clientX, 2) +
+                    Math.pow(touch2.clientY - touch1.clientY, 2)
+                );
+                
+                const zoomDelta = (STATE.touchStartDistance - currentDistance) * CONFIG.controls.touch.zoomSensitivity;
+                camera.position.z = THREE.MathUtils.clamp(
+                    STATE.touchStartZoom + zoomDelta,
+                    CONFIG.controls.minZoom,
+                    CONFIG.controls.maxZoom
+                );
+            }
+        }
+
+        function handleTouchEnd(event) {
+            event.preventDefault();
+            
+            const touches = event.touches;
+            const changedTouches = event.changedTouches;
+            
+            if (touches.length === 0) {
+                // 所有手指离开
+                STATE.isPinching = false;
+                
+                // 检查是否点击了照片（在分散模式下）
+                if (STATE.mode === 'SCATTER' || STATE.mode === 'FOCUS_PHOTO') {
+                    const lastTouch = changedTouches[0];
+                    mouse.x = (lastTouch.clientX / window.innerWidth) * 2 - 1;
+                    mouse.y = -(lastTouch.clientY / window.innerHeight) * 2 + 1;
+                    
+                    raycaster.setFromCamera(mouse, camera);
+                    
+                    const photos = particleSystem.filter(p => p.type === 'PHOTO');
+                    const photoMeshes = photos.map(p => p.mesh.children[1]);
+                    
+                    const intersects = raycaster.intersectObjects(photoMeshes, true);
+                    
+                    if (intersects.length > 0) {
+                        const photoMesh = intersects[0].object.parent;
+                        focusOnPhoto(photoMesh);
+                        return;
+                    }
+                    
+                    // 如果点击空白处且当前是照片聚焦模式，则退出
+                    if (STATE.mode === 'FOCUS_PHOTO') {
+                        exitPhotoFocus();
+                    }
+                }
+            } else if (touches.length === 1) {
+                // 从双指变为单指
+                STATE.isPinching = false;
+                const touch = touches[0];
+                STATE.touchStart.x = touch.clientX;
+                STATE.touchStart.y = touch.clientY;
+            }
         }
 
         function handleMouseDown(event) {
@@ -1228,9 +1469,8 @@
                 
                 raycaster.setFromCamera(mouse, camera);
                 
-                // 只检查照片
                 const photos = particleSystem.filter(p => p.type === 'PHOTO');
-                const photoMeshes = photos.map(p => p.mesh.children[1]); // 照片mesh是第二个子元素
+                const photoMeshes = photos.map(p => p.mesh.children[1]);
                 
                 const intersects = raycaster.intersectObjects(photoMeshes, true);
                 
@@ -1240,7 +1480,6 @@
                     return;
                 }
                 
-                // 如果点击空白处且当前是照片聚焦模式，则退出
                 if (STATE.mode === 'FOCUS_PHOTO') {
                     exitPhotoFocus();
                 }
@@ -1261,13 +1500,11 @@
         function handleKeyDown(event) {
             STATE.keys[event.key.toLowerCase()] = true;
             
-            // 空格键切换主题
             if (event.code === 'Space') {
                 event.preventDefault();
                 switchTheme((STATE.currentThemeIndex + 1) % 3);
             }
             
-            // F键切换全屏
             if (event.key.toLowerCase() === 'f') {
                 event.preventDefault();
                 if (document.fullscreenElement) {
@@ -1277,7 +1514,6 @@
                 }
             }
             
-            // ESC键退出特殊模式
             if (event.key.toLowerCase() === 'escape') {
                 event.preventDefault();
                 if (STATE.mode === 'FOCUS_PHOTO') {
@@ -1287,7 +1523,6 @@
                 }
             }
             
-            // R键重置视图
             if (event.key.toLowerCase() === 'r') {
                 event.preventDefault();
                 STATE.rotation.x = 0.1;
@@ -1300,7 +1535,6 @@
                 updateModeButtons();
             }
             
-            // H键切换隐藏控制
             if (event.key.toLowerCase() === 'h') {
                 event.preventDefault();
                 const hideBtn = document.getElementById('hide-controls-btn');
@@ -1313,7 +1547,6 @@
         }
 
         function updateKeyboardControls(dt) {
-            // 方向键控制旋转
             const rotationSpeed = 2.0;
             
             if (STATE.keys['arrowleft'] || STATE.keys['a']) {
@@ -1329,7 +1562,6 @@
                 STATE.rotation.x -= rotationSpeed * dt;
             }
             
-            // Q/E键控制缩放
             const zoomSpeed = 10.0;
             if (STATE.keys['q'] || STATE.keys['pageup']) {
                 camera.position.z = THREE.MathUtils.clamp(
@@ -1346,7 +1578,6 @@
                 );
             }
             
-            // 1/2/3数字键快速切换主题
             if (STATE.keys['1']) {
                 switchTheme(0);
             }
@@ -1414,10 +1645,8 @@
             requestAnimationFrame(animate);
             const dt = clock.getDelta(); STATE.time = clock.elapsedTime;
             
-            // 更新键盘控制
             updateKeyboardControls(dt);
             
-            // 处理动画过渡
             if (STATE.isAnimating) {
                 STATE.animationProgress += dt / STATE.animationDuration;
                 if (STATE.animationProgress >= 1) {
@@ -1430,7 +1659,6 @@
                 STATE.rotation.y = THREE.MathUtils.lerp(STATE.rotation.y, STATE.targetRotation.y, t);
             }
             
-            // 自动旋转（如果没有鼠标或键盘输入且不在特殊模式下）
             if (!STATE.isMouseDown && 
                 Object.values(STATE.keys).every(k => !k) && 
                 !STATE.isAnimating &&
@@ -1476,13 +1704,18 @@
         }
 
         function setupEvents() {
-            // 窗口大小调整
             window.addEventListener('resize', () => { 
                 camera.aspect = window.innerWidth/window.innerHeight; 
                 camera.updateProjectionMatrix(); 
                 renderer.setSize(window.innerWidth, window.innerHeight); 
                 composer.setSize(window.innerWidth, window.innerHeight); 
             });
+            
+            // 触控事件
+            renderer.domElement.addEventListener('touchstart', handleTouchStart, { passive: false });
+            renderer.domElement.addEventListener('touchmove', handleTouchMove, { passive: false });
+            renderer.domElement.addEventListener('touchend', handleTouchEnd, { passive: false });
+            renderer.domElement.addEventListener('touchcancel', handleTouchEnd, { passive: false });
             
             // 鼠标事件
             renderer.domElement.addEventListener('mousedown', handleMouseDown);
